@@ -1,0 +1,153 @@
+name: Parallel Cloud Render
+run-name: "Cloud Render ${{ inputs.job_tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_tag:
+        description: "Temporary GitHub Release tag holding source chunks (e.g., render-20261107-abc123)"
+        required: true
+        type: string
+      chunks_json:
+        description: "JSON array of chunk indices to render in parallel (e.g., [0,1,2,3])"
+        required: true
+        type: string
+      ffmpeg_args:
+        description: "Exact FFmpeg encoding flags applied to each chunk"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  render-chunk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: ${{ fromJson(inputs.chunks_json) }}
+
+    steps:
+      - name: Install static FFmpeg 8.0 GPL build
+        run: |
+          set -euo pipefail
+          # Download the latest static FFmpeg 8.0 GPL build from BtbN/FFmpeg-Builds
+          # with automatic fallback to the rolling n8.1 GPL static build if needed.
+          FFMPEG_URL_8_0="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-02-28-12-59/ffmpeg-n8.0.1-66-g27b8d1a017-linux64-gpl-8.0.tar.xz"
+          FFMPEG_URL_FALLBACK="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+
+          mkdir -p /tmp/ffmpeg-static
+          if ! curl -fsSL --retry 3 "$FFMPEG_URL_8_0" -o /tmp/ffmpeg-static/ffmpeg.tar.xz; then
+            echo "Falling back to latest 8.x GPL build..."
+            curl -fsSL --retry 3 "$FFMPEG_URL_FALLBACK" -o /tmp/ffmpeg-static/ffmpeg.tar.xz
+          fi
+
+          tar -xJf /tmp/ffmpeg-static/ffmpeg.tar.xz -C /tmp/ffmpeg-static --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+          sudo install -m 0755 /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg-static
+
+          /usr/local/bin/ffmpeg -version | head -n 2
+
+      - name: Download assigned input chunk from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_TAG: ${{ inputs.job_tag }}
+          CHUNK_INDEX: ${{ matrix.chunk }}
+        run: |
+          set -euo pipefail
+          CHUNK_ID=$(printf "%04d" "$CHUNK_INDEX")
+          IN_FILE="in_${CHUNK_ID}.mp4"
+          echo "Downloading ${IN_FILE} from release ${JOB_TAG}..."
+          gh release download "$JOB_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "$IN_FILE" \
+            --clobber
+          ls -lh "$IN_FILE"
+
+      - name: Encode chunk with FFmpeg
+        env:
+          CHUNK_INDEX: ${{ matrix.chunk }}
+          FFMPEG_ARGS: ${{ inputs.ffmpeg_args }}
+        run: |
+          set -euo pipefail
+          CHUNK_ID=$(printf "%04d" "$CHUNK_INDEX")
+          IN_FILE="in_${CHUNK_ID}.mp4"
+          OUT_FILE="out_${CHUNK_ID}.mp4"
+
+          echo "Encoding ${IN_FILE} -> ${OUT_FILE} with args: ${FFMPEG_ARGS}"
+          # Use eval/word-splitting carefully so user-supplied flags (including quoted filters) parse cleanly
+          eval "/usr/local/bin/ffmpeg -hide_banner -y -i \"$IN_FILE\" $FFMPEG_ARGS \"$OUT_FILE\""
+
+          ls -lh "$OUT_FILE"
+          /usr/local/bin/ffprobe -v error -show_entries format=duration,size -of default=noprint_wrappers=1 "$OUT_FILE"
+
+      - name: Upload rendered chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-out-${{ matrix.chunk }}
+          path: out_*.mp4
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  stitch:
+    needs: render-chunk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install static FFmpeg 8.0 GPL build
+        run: |
+          set -euo pipefail
+          FFMPEG_URL_8_0="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-02-28-12-59/ffmpeg-n8.0.1-66-g27b8d1a017-linux64-gpl-8.0.tar.xz"
+          FFMPEG_URL_FALLBACK="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+
+          mkdir -p /tmp/ffmpeg-static
+          if ! curl -fsSL --retry 3 "$FFMPEG_URL_8_0" -o /tmp/ffmpeg-static/ffmpeg.tar.xz; then
+            curl -fsSL --retry 3 "$FFMPEG_URL_FALLBACK" -o /tmp/ffmpeg-static/ffmpeg.tar.xz
+          fi
+
+          tar -xJf /tmp/ffmpeg-static/ffmpeg.tar.xz -C /tmp/ffmpeg-static --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+          sudo install -m 0755 /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg-static
+
+      - name: Download all rendered chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-out-*
+          merge-multiple: true
+          path: rendered_chunks
+
+      - name: Stitch chunks losslessly in sorted order
+        run: |
+          set -euo pipefail
+          cd rendered_chunks
+          ls -lh out_*.mp4
+
+          # Build concat_list.txt in strict lexicographical order (out_0000.mp4, out_0001.mp4, ...)
+          rm -f concat_list.txt
+          for f in $(ls -1 out_*.mp4 | sort); do
+            echo "file '$f'" >> concat_list.txt
+          done
+
+          echo "Concat list contents:"
+          cat concat_list.txt
+
+          /usr/local/bin/ffmpeg -hide_banner -y -f concat -safe 0 -i concat_list.txt -c copy ../final_rendered.mp4
+          cd ..
+          ls -lh final_rendered.mp4
+          /usr/local/bin/ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_name,width,height -of default=noprint_wrappers=1 final_rendered.mp4
+
+      - name: Upload final_rendered.mp4 to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_TAG: ${{ inputs.job_tag }}
+        run: |
+          set -euo pipefail
+          echo "Uploading final_rendered.mp4 to release ${JOB_TAG}..."
+          gh release upload "$JOB_TAG" final_rendered.mp4 \
+            --repo "${{ github.repository }}" \
+            --clobber
+          echo "Upload complete."

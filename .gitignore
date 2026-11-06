@@ -1,0 +1,18 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Media and temporary render artifacts
+samples/*.mp4
+output/*.mp4
+output/
+temp_chunks/
+*.tmp
+*.part

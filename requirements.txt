@@ -1,0 +1,3 @@
+# antigravity-cloud-render uses Python 3.10+ standard library by default.
+# Optional rich terminal output formatting:
+rich>=13.0.0
