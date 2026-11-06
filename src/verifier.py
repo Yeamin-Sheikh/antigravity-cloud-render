@@ -41,6 +41,16 @@ def verify_rendered_output(
         f"(delta={duration_diff:.3f}s)"
     )
 
+    if out_info["video_codec"] == "unknown" or out_info["width"] <= 0 or out_info["height"] <= 0:
+        raise RuntimeError(
+            f"Rendered video is missing a valid video stream: {out_info}"
+        )
+
+    if src_info["has_audio"] and not out_info["has_audio"]:
+        raise RuntimeError(
+            "Source video contained an audio stream, but rendered video has no audio stream."
+        )
+
     if not duration_ok:
         raise RuntimeError(
             f"Rendered video duration ({out_info['duration']:.3f}s) deviates from "

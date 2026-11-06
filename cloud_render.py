@@ -59,8 +59,42 @@ def resolve_safe_output_path(input_path: Path, requested_output: Path, default_s
     return resolved_out
 
 
+def normalize_cli_argv(argv: list[str]) -> list[str]:
+    """
+    Normalize CLI arguments so `--args "-c:v libx264 ..."` works seamlessly with Python's
+    argparse even when the FFmpeg argument string begins with a leading hyphen (`-`).
+    Also handles cases where a shell wrapper splits tokens after `--args`.
+    """
+    known_top_flags = {"--chunks", "-c", "--repo", "--keep-release", "-h", "--help"}
+    normalized: list[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in ("--args", "-a") and i + 1 < len(argv):
+            # Collect the next token; if the shell split an unquoted FFmpeg flag sequence,
+            # gather subsequent tokens until we hit a known cloud-render top-level flag.
+            collected = [argv[i + 1]]
+            j = i + 2
+            # If argv[i+1] has no spaces and starts with '-', check if subsequent tokens
+            # are part of the FFmpeg args rather than cloud-render flags.
+            if " " not in argv[i + 1] and argv[i + 1].startswith("-"):
+                while j < len(argv) and argv[j] not in known_top_flags:
+                    collected.append(argv[j])
+                    j += 1
+            merged_val = " ".join(collected)
+            normalized.append(f"--args={merged_val}")
+            i = j
+        else:
+            normalized.append(token)
+            i += 1
+    return normalized
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     """Parse command-line flags for cloud-render."""
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    clean_argv = normalize_cli_argv(raw_argv)
+
     parser = argparse.ArgumentParser(
         prog="cloud-render",
         description="Offload FFmpeg video renders to parallel 4-vCPU GitHub Actions runners.",
@@ -100,7 +134,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="Do not delete the temporary GitHub release/tag after completion (for debugging).",
     )
-    return parser.parse_args(argv)
+    return parser.parse_args(clean_argv)
 
 
 def main(argv=None) -> int:
