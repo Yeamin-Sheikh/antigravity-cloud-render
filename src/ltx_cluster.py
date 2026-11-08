@@ -11,8 +11,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from src.github_cluster import cleanup_temp_release, watch_workflow_run
-
 
 def create_empty_temp_release(repo: str, job_tag: str) -> None:
     """
