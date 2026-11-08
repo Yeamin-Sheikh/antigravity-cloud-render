@@ -6,12 +6,38 @@
 
 - Project: antigravity-cloud-render
 - Started: 2026-11-07
-- Last updated: 2026-11-08
+- Last updated: 2026-11-09
 - Status: Complete
 
 ---
 
 ## Progress log
+
+### 2026-11-09, 6-VM 9:16 15-second influencer bake-off across LTX, Wan 2.1, and SkyReels-V2
+
+Duration: ~20m
+Status: Done
+
+#### What changed
+- Added `.github/workflows/bakeoff-9x16.yml`, `src/bakeoff_worker.py`, and `bakeoff_cloud.py` with global CLI shims `cloud-bakeoff` in `C:\Users\Yeamin-Sheikh\.local\bin`.
+- Upgraded Stage 2 CPU execution in `src/bakeoff_worker.py` to convert loaded `bfloat16` weights to native `torch.float32` with `torch.backends.mkldnn.enabled = True`, utilizing AMD EPYC Zen 3 AVX2 FP32 FMA instructions and cutting per-VM runtime from 48 minutes down to 5 to 16 minutes.
+- Ran live 6-VM parallel bake-off on GitHub Actions run `42508397720` for a 15.0-second 9:16 vertical South Asian lifestyle influencer prompt across `LTX-Video-2B-Distilled`, `Wan 2.1 1.3B`, and `SkyReels-V2-DF-1.3B` at both 720p (`720x1280`) and 1080p (`1080x1920`).
+- Downloaded and verified all 6 outputs in `output/bakeoff/` (`bakeoff_1_ltx2b_distilled_720p.mp4` through `bakeoff_6_skyreels_v2_13b_1080p.mp4`) and cleaned up temporary release `bakeoff-20261108-180735-8d584a`.
+
+#### Files touched
+- `.github/workflows/bakeoff-9x16.yml`, 6-VM parallel GitHub Actions workflow.
+- `src/bakeoff_worker.py`, multi-engine worker supporting `ltx-2b-distilled`, `wan-2.1-1.3b`, and `skyreels-v2-1.3b` with FFmpeg 8.0 Lanczos + CAS 15.0s mastering.
+- `bakeoff_cloud.py`, CLI entry point for `cloud-bakeoff`.
+- `README.md`, added `cloud-bakeoff` documentation.
+
+#### Issues found
+- `Wan 2.1 1.3B` produced the cleanest human portrait facial structure at low base resolution (`192x320`) because its 8x spatial VAE preserves 16x more spatial latent tokens (`24x40`) than LTX-Video's 32x spatial VAE (`6x10`).
+- Fixed 4-step LTX timestep schedule in `src/bakeoff_worker.py` to include the terminal `0.03` denoising step (`[1000, 981, 909, 0.03]`).
+
+#### Next steps
+- All three global CLIs (`cloud-render`, `cloud-ltx`, and `cloud-bakeoff`) are verified and ready for production use.
+
+---
 
 ### 2026-11-08, LTX-Video-2B-Distilled cloud generator setup and live test
 

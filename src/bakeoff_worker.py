@@ -130,9 +130,9 @@ def run_ltx_engine(
     )
     pipe.vae.enable_tiling()
 
-    if steps == 4:
-        timesteps = [1000, 987, 909, 725]
-    elif steps == 6:
+    if steps <= 4:
+        timesteps = [1000, 981, 909, 0.03]
+    elif steps <= 6:
         timesteps = [1000, 993, 981, 909, 725, 0.03]
     else:
         timesteps = [1000, 993, 987, 981, 975, 909, 725, 0.03]

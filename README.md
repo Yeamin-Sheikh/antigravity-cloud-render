@@ -59,3 +59,11 @@ Multi-scene parallel generation across multiple runners:
 ```powershell
 cloud-ltx --prompt "Aerial shot of a coastal highway at sunset" --prompt "Close-up of ocean waves crashing against dark rocks" output/ltx_two_scenes.mp4 --width 512 --height 320 --frames 25
 ```
+
+### Multi-VM 9:16 15-second influencer bake-off
+
+Launch 6 parallel VMs comparing `LTX-Video-2B-Distilled`, `Wan 2.1 1.3B`, and `SkyReels-V2-DF-1.3B` in both 720p (`720x1280`) and 1080p (`1080x1920`):
+
+```powershell
+cloud-bakeoff --duration 15.0 --out-dir output/bakeoff
+```
