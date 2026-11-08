@@ -1,0 +1,186 @@
+name: LTX-Video Parallel Cloud Generator
+run-name: "LTX Cloud Gen ${{ inputs.job_tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_tag:
+        description: "Temporary GitHub Release tag for storing final_ltx.mp4"
+        required: true
+        type: string
+      scenes_json:
+        description: "JSON array of scene objects: [{\"index\":0,\"prompt\":\"...\",\"seed\":42}]"
+        required: true
+        type: string
+      width:
+        description: "Video width in pixels (multiple of 32)"
+        required: false
+        default: "512"
+        type: string
+      height:
+        description: "Video height in pixels (multiple of 32)"
+        required: false
+        default: "320"
+        type: string
+      num_frames:
+        description: "Number of frames (8*k + 1, e.g. 25, 49, 81)"
+        required: false
+        default: "25"
+        type: string
+      fps:
+        description: "Frame rate"
+        required: false
+        default: "24"
+        type: string
+      steps:
+        description: "Distilled denoising steps (default 7)"
+        required: false
+        default: "7"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  generate-scene:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scene: ${{ fromJson(inputs.scenes_json) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner SSD space and add 8 GB swap safety buffer
+        run: |
+          set -euo pipefail
+          echo "Disk space before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          # Add an 8 GB swapfile on fast NVMe as an extra safety net against memory spikes
+          if [ ! -f /swapfile_ltx ]; then
+            sudo fallocate -l 8G /swapfile_ltx
+            sudo chmod 600 /swapfile_ltx
+            sudo mkswap /swapfile_ltx
+            sudo swapon /swapfile_ltx
+          fi
+          echo "Disk and memory after cleanup:"
+          df -h /
+          free -h
+
+      - name: Set up Python 3.11 and install CPU PyTorch + Diffusers
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install LTX-Video dependencies and static FFmpeg 8.0
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          # Install lightweight CPU-only PyTorch wheel (~180 MB instead of 2.5 GB CUDA wheel)
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --quiet
+          pip install "diffusers>=0.33.0" transformers accelerate sentencepiece protobuf imageio imageio-ffmpeg hf_transfer safetensors --quiet
+
+          # Install static FFmpeg 8.0 GPL build
+          FFMPEG_URL_8_0="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-02-28-12-59/ffmpeg-n8.0.1-66-g27b8d1a017-linux64-gpl-8.0.tar.xz"
+          FFMPEG_URL_FALLBACK="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+          mkdir -p /tmp/ffmpeg-static
+          if ! curl -fsSL --retry 3 "$FFMPEG_URL_8_0" -o /tmp/ffmpeg-static/ffmpeg.tar.xz; then
+            curl -fsSL --retry 3 "$FFMPEG_URL_FALLBACK" -o /tmp/ffmpeg-static/ffmpeg.tar.xz
+          fi
+          tar -xJf /tmp/ffmpeg-static/ffmpeg.tar.xz -C /tmp/ffmpeg-static --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+          sudo install -m 0755 /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg-static
+
+      - name: Generate scene with LTX-Video-2B-Distilled
+        env:
+          SCENE_INDEX: ${{ matrix.scene.index }}
+          SCENE_PROMPT: ${{ matrix.scene.prompt }}
+          SCENE_SEED: ${{ matrix.scene.seed }}
+          VID_WIDTH: ${{ inputs.width }}
+          VID_HEIGHT: ${{ inputs.height }}
+          VID_FRAMES: ${{ inputs.num_frames }}
+          VID_FPS: ${{ inputs.fps }}
+          VID_STEPS: ${{ inputs.steps }}
+        run: |
+          set -euo pipefail
+          SCENE_ID=$(printf "%04d" "$SCENE_INDEX")
+          OUT_FILE="scene_${SCENE_ID}.mp4"
+
+          python src/ltx_worker.py \
+            --prompt "$SCENE_PROMPT" \
+            --output "$OUT_FILE" \
+            --width "$VID_WIDTH" \
+            --height "$VID_HEIGHT" \
+            --num-frames "$VID_FRAMES" \
+            --fps "$VID_FPS" \
+            --steps "$VID_STEPS" \
+            --seed "$SCENE_SEED"
+
+          ls -lh "$OUT_FILE"
+          /usr/local/bin/ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height -of default=noprint_wrappers=1 "$OUT_FILE"
+
+      - name: Upload generated scene artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ltx-scene-${{ matrix.scene.index }}
+          path: scene_*.mp4
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  stitch-scenes:
+    needs: generate-scene
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install static FFmpeg 8.0 GPL build
+        run: |
+          set -euo pipefail
+          FFMPEG_URL_8_0="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-02-28-12-59/ffmpeg-n8.0.1-66-g27b8d1a017-linux64-gpl-8.0.tar.xz"
+          FFMPEG_URL_FALLBACK="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+          mkdir -p /tmp/ffmpeg-static
+          if ! curl -fsSL --retry 3 "$FFMPEG_URL_8_0" -o /tmp/ffmpeg-static/ffmpeg.tar.xz; then
+            curl -fsSL --retry 3 "$FFMPEG_URL_FALLBACK" -o /tmp/ffmpeg-static/ffmpeg.tar.xz
+          fi
+          tar -xJf /tmp/ffmpeg-static/ffmpeg.tar.xz -C /tmp/ffmpeg-static --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+          sudo install -m 0755 /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg-static
+
+      - name: Download all generated scene artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ltx-scene-*
+          merge-multiple: true
+          path: generated_scenes
+
+      - name: Stitch scenes losslessly in sorted order
+        run: |
+          set -euo pipefail
+          cd generated_scenes
+          ls -lh scene_*.mp4
+
+          rm -f concat_list.txt
+          for f in $(ls -1 scene_*.mp4 | sort); do
+            echo "file '$f'" >> concat_list.txt
+          done
+
+          cat concat_list.txt
+          /usr/local/bin/ffmpeg -hide_banner -y -f concat -safe 0 -i concat_list.txt -c copy ../final_ltx.mp4
+          cd ..
+          ls -lh final_ltx.mp4
+          /usr/local/bin/ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_name,width,height -of default=noprint_wrappers=1 final_ltx.mp4
+
+      - name: Upload final_ltx.mp4 to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_TAG: ${{ inputs.job_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$JOB_TAG" final_ltx.mp4 \
+            --repo "${{ github.repository }}" \
+            --clobber

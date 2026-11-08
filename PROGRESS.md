@@ -6,12 +6,39 @@
 
 - Project: antigravity-cloud-render
 - Started: 2026-11-07
-- Last updated: 2026-11-07
-- Status: Complete
+- Last updated: 2026-11-08
+- Status: Active
 
 ---
 
 ## Progress log
+
+### 2026-11-08, LTX-Video-2B-Distilled cloud generator setup
+
+Duration: ~15m
+Status: In Progress
+
+#### What changed
+- Added `.github/workflows/ltx-generate.yml` for parallel text-to-video generation on `ubuntu-latest` VMs using `LTX-Video-2B-Distilled`.
+- Created `src/ltx_worker.py` with two-stage memory offloading: encodes prompt with `city96/t5-v1_1-xxl-encoder-bf16`, frees RAM and disk cache, then runs `multimodalart/ltxv-2b-0.9.6-distilled` and `Lightricks/LTX-Video-0.9.5` VAE in `bfloat16` across 8 distilled steps.
+- Built `ltx_cloud.py` and `src/ltx_cluster.py`, and installed global `cloud-ltx` shims in `C:\Users\Yeamin-Sheikh\.local\bin`.
+- Updated `config.json` and `README.md` with `cloud-ltx` documentation.
+
+#### Files touched
+- `.github/workflows/ltx-generate.yml`, GitHub Actions workflow for single or multi-scene `LTX-Video-2B-Distilled` generation.
+- `src/ltx_worker.py`, two-stage memory-optimized Diffusers worker script.
+- `src/ltx_cluster.py`, release and workflow orchestration for `ltx-generate.yml`.
+- `ltx_cloud.py`, CLI entry point for `cloud-ltx`.
+- `config.json`, added `ltx_workflow`.
+- `README.md`, added `cloud-ltx` usage examples.
+
+#### Issues found
+- `Lightricks/LTX-Video` stores its default T5-XXL text encoder in FP32 at 18.1 GB, which exceeds the default 14 GB free disk space on a GitHub Actions runner. Solved by using `city96/t5-v1_1-xxl-encoder-bf16` at 9.08 GB in Stage 1 and purging its cache before Stage 2 downloads the 3.67 GB distilled 2B transformer.
+
+#### Next steps
+- Push `ltx-generate.yml` and worker modules to GitHub and run a live `cloud-ltx` verification job.
+
+---
 
 ### 2026-11-07, Initial cluster setup and live 4-chunk render verification
 
