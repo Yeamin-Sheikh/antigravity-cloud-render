@@ -1,0 +1,121 @@
+name: Multi-VM 9x16 Influencer Bakeoff
+run-name: "Bakeoff 9x16 ${{ inputs.job_tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_tag:
+        description: "Temporary GitHub Release tag to collect all bake-off outputs"
+        required: true
+        type: string
+      prompt:
+        description: "9:16 vertical influencer prompt shared across all VMs"
+        required: true
+        type: string
+      configs_json:
+        description: "JSON array of VM configurations to run in parallel"
+        required: true
+        type: string
+      duration:
+        description: "Target output duration in seconds (default 15.0)"
+        required: false
+        default: "15.0"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  bakeoff-vm:
+    name: "VM ${{ matrix.cfg.id }} (${{ matrix.cfg.engine }} ${{ matrix.cfg.quality }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: ${{ fromJson(inputs.configs_json) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reclaim ~55 GB runner SSD space and add 8 GB NVMe swap
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          if [ ! -f /swapfile_bakeoff ]; then
+            sudo fallocate -l 8G /swapfile_bakeoff
+            sudo chmod 600 /swapfile_bakeoff
+            sudo mkswap /swapfile_bakeoff
+            sudo swapon /swapfile_bakeoff
+          fi
+          df -h /
+          free -h
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU PyTorch, Diffusers, and static FFmpeg 8.0 GPL
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --quiet
+          pip install "diffusers>=0.33.0" transformers accelerate sentencepiece protobuf imageio imageio-ffmpeg hf_transfer safetensors ftfy --quiet
+
+          FFMPEG_URL_8_0="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-02-28-12-59/ffmpeg-n8.0.1-66-g27b8d1a017-linux64-gpl-8.0.tar.xz"
+          FFMPEG_URL_FALLBACK="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+          mkdir -p /tmp/ffmpeg-static
+          if ! curl -fsSL --retry 3 "$FFMPEG_URL_8_0" -o /tmp/ffmpeg-static/ffmpeg.tar.xz; then
+            curl -fsSL --retry 3 "$FFMPEG_URL_FALLBACK" -o /tmp/ffmpeg-static/ffmpeg.tar.xz
+          fi
+          tar -xJf /tmp/ffmpeg-static/ffmpeg.tar.xz -C /tmp/ffmpeg-static --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+          sudo install -m 0755 /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg-static
+
+      - name: Run 9:16 influencer generation and master to ${{ matrix.cfg.quality }}
+        env:
+          CFG_ID: ${{ matrix.cfg.id }}
+          CFG_ENGINE: ${{ matrix.cfg.engine }}
+          CFG_BASE_W: ${{ matrix.cfg.base_w }}
+          CFG_BASE_H: ${{ matrix.cfg.base_h }}
+          CFG_FRAMES: ${{ matrix.cfg.frames }}
+          CFG_STEPS: ${{ matrix.cfg.steps }}
+          CFG_TARGET_W: ${{ matrix.cfg.target_w }}
+          CFG_TARGET_H: ${{ matrix.cfg.target_h }}
+          CFG_SEED: ${{ matrix.cfg.seed }}
+          PROMPT_TEXT: ${{ inputs.prompt }}
+          TARGET_DURATION: ${{ inputs.duration }}
+        run: |
+          set -euo pipefail
+          OUT_FILE="bakeoff_${CFG_ID}.mp4"
+
+          python src/bakeoff_worker.py \
+            --config-id "$CFG_ID" \
+            --engine "$CFG_ENGINE" \
+            --prompt "$PROMPT_TEXT" \
+            --base-width "$CFG_BASE_W" \
+            --base-height "$CFG_BASE_H" \
+            --base-frames "$CFG_FRAMES" \
+            --steps "$CFG_STEPS" \
+            --target-width "$CFG_TARGET_W" \
+            --target-height "$CFG_TARGET_H" \
+            --duration "$TARGET_DURATION" \
+            --seed "$CFG_SEED" \
+            --output "$OUT_FILE"
+
+          ls -lh "$OUT_FILE"
+          /usr/local/bin/ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_name,width,height,r_frame_rate -of default=noprint_wrappers=1 "$OUT_FILE"
+
+      - name: Upload ${{ matrix.cfg.id }} MP4 directly to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_TAG: ${{ inputs.job_tag }}
+          CFG_ID: ${{ matrix.cfg.id }}
+        run: |
+          set -euo pipefail
+          OUT_FILE="bakeoff_${CFG_ID}.mp4"
+          gh release upload "$JOB_TAG" "$OUT_FILE" \
+            --repo "${{ github.repository }}" \
+            --clobber
